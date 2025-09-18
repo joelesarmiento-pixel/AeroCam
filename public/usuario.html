@@ -1,0 +1,95 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>Visionario – AeroCam</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app">
+  <div class="header"><div class="h-title">Visionario</div><div class="badge">grabación</div></div>
+  <div class="content">
+    <div class="card">
+      <h3>Presencia en tu zona</h3>
+      <canvas id="mapUsers" class="map" width="360" height="260"></canvas>
+      <div class="small">Zonas azules ≈ cobertura 500 m – 1 km por AeroCam activo.</div>
+    </div>
+    <div class="card">
+      <h3>Solicitud inmediata</h3>
+      <div class="row">
+        <select id="immediateMode"><option value="punto_fijo">Punto fijo</option><option value="seguimiento">Seguimiento</option></select>
+        <button id="createImmediate">Pedir ahora</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Programar</h3>
+      <div class="row"><input id="when" class="input" type="datetime-local" /></div>
+      <div class="row">
+        <input id="lat" class="input" type="number" step="0.0001" placeholder="Lat ej. -33.44" />
+        <input id="lon" class="input" type="number" step="0.0001" placeholder="Lon ej. -70.65" />
+        <input id="alt" class="input" type="number" step="1" placeholder="Alt (m)" />
+      </div>
+      <div class="row">
+        <select id="scheduledMode"><option value="punto_fijo">Punto fijo</option><option value="seguimiento">Seguimiento</option></select>
+        <button id="createScheduled">Programar</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Ver transmisión</h3>
+      <div class="row"><input id="room" class="input" placeholder="ID de solicitud" /><button id="joinBtn" class="secondary">Unirme</button></div>
+      <video id="remoteVideo" class="video" autoplay playsinline></video>
+    </div>
+  </div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+
+function drawMapWithCoverage(canvasId, aerocams) {
+  const c = document.getElementById(canvasId); if (!c) return;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.fillStyle = '#0a111b'; ctx.fillRect(0,0,c.width,c.height);
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  for (let x=0; x<c.width; x+=32){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,c.height); ctx.stroke(); }
+  for (let y=0; y<c.height; y+=32){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(c.width,y); ctx.stroke(); }
+  function toXY(lat, lon){ const S=170; return { x:c.width/2+(lon||0)*S, y:c.height/2-(lat||0)*S }; }
+  aerocams.forEach(a => {
+    const {x,y} = toXY(a.lat||0, a.lon||0);
+    const r = Math.min(160, Math.max(32, (a.radius||800)/6));
+    const g = ctx.createRadialGradient(x,y,8,x,y,r);
+    g.addColorStop(0,'rgba(78,168,255,0.35)'); g.addColorStop(1,'rgba(78,168,255,0.03)');
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = 'rgba(78,168,255,0.85)'; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke();
+    ctx.fillStyle = '#7bdcff'; ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2); ctx.fill();
+  });
+}
+
+const socket = io(); let aerocams = []; let pc, room;
+socket.on('aerocams:update', (items) => { aerocams = items; drawMapWithCoverage('mapUsers', aerocams); });
+document.getElementById('createImmediate').onclick = async () => {
+  const mode = document.getElementById('immediateMode').value;
+  const res = await fetch('/api/request/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type:'inmediata', mode, user:{name:'Visionario'}, location:null }) });
+  const data = await res.json(); document.getElementById('room').value = data.id; alert('Solicitud creada. ID: '+data.id);
+};
+document.getElementById('createScheduled').onclick = async () => {
+  const when = document.getElementById('when').value, lat = parseFloat(document.getElementById('lat').value), lon = parseFloat(document.getElementById('lon').value), alt = parseFloat(document.getElementById('alt').value), mode = document.getElementById('scheduledMode').value;
+  if (!when || isNaN(lat) || isNaN(lon)) return alert('Completa fecha/hora y ubicación');
+  const res = await fetch('/api/request/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ type:'programada', mode, when, location:{lat,lon,alt} }) });
+  const data = await res.json(); document.getElementById('room').value = data.id; alert('Programada. ID: '+data.id);
+};
+document.getElementById('joinBtn').onclick = () => {
+  room = (document.getElementById('room').value||'').trim(); if(!room) return alert('Falta ID');
+  socket.emit('join', { room, role:'VISIONARIO' }); setupPC();
+};
+function setupPC(){
+  pc = new RTCPeerConnection({ iceServers:[{urls:'stun:stun.l.google.com:19302'}] });
+  pc.ontrack = (e)=>{ document.getElementById('remoteVideo').srcObject = e.streams[0]; };
+  pc.onicecandidate = (e)=>{ if(e.candidate) socket.emit('ice', { room, candidate:e.candidate }); };
+}
+socket.on('offer', async ({ sdp }) => { await pc.setRemoteDescription(new RTCSessionDescription(sdp)); const answer = await pc.createAnswer(); await pc.setLocalDescription(answer); socket.emit('answer', { room, sdp: answer }); });
+socket.on('ice', async ({ candidate }) => { try{ await pc.addIceCandidate(candidate); }catch(e){} });
+</script>
+</body>
+</html>
