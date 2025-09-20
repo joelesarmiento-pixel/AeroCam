@@ -1,118 +1,37 @@
-
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-  <title>AeroCam – Piloto</title>
-  <link rel="stylesheet" href="/style.css" />
+  <meta charset="UTF-8">
+  <title>AeroCam - Piloto</title>
+  <style>
+    #map { height: 100vh; width: 100%; }
+  </style>
 </head>
 <body>
-<div class="app">
-  <div class="header"><div class="h-title">AeroCam</div><div class="badge">piloto</div></div>
-  <div class="content">
-    <div class="card">
-      <h3>Mi estado</h3>
-      <div class="row">
-        <input id="acId" class="input" placeholder="ID ej. AC-001" />
-        <input id="acName" class="input" placeholder="Nombre" />
-      </div>
-      <div class="row">
-        <input id="acLat" class="input" type="number" step="0.0001" placeholder="Lat -33.44" />
-        <input id="acLon" class="input" type="number" step="0.0001" placeholder="Lon -70.65" />
-        <input id="acRadius" class="input" type="number" step="50" value="800" placeholder="Radio (m)" />
-      </div>
-      <div class="row">
-        <select id="acOnline"><option value="true">Online</option><option value="false">Offline</option></select>
-        <button id="publish">Publicar</button>
-      </div>
-      <div class="small">Sugerido: 500 m – 1 km en ciudad (Mini 4 Pro, VLOS, ≤120 m).</div>
-    </div>
-    <div class="card"><h3>Mapa de cobertura</h3><canvas id="mapAero" class="map" width="360" height="260"></canvas></div>
-    <div class="card"><h3>Solicitudes inmediatas pendientes</h3><div id="list"></div></div>
-    <div class="card">
-      <h3>Transmisión</h3>
-      <div class="row">
-        <input id="room" class="input" placeholder="ID solicitud" />
-        <button id="joinBtn" class="secondary" disabled>Unirme</button>
-        <button id="cameraBtn" class="secondary" disabled>Cam</button>
-        <button id="startBtn" disabled>Iniciar</button>
-      </div>
-      <video id="localVideo" class="video" autoplay playsinline muted></video>
-    </div>
-  </div>
-  <div class="tabbar"><button class="secondary">Cobertura</button><button class="secondary">Solicitudes</button><button class="secondary">Perfil</button></div>
-</div>
+  <div id="map"></div>
 
-<script src="/socket.io/socket.io.js"></script>
-<script>
+  <script>
+    let map;
 
-function drawMapWithCoverage(canvasId, aerocams) {
-  const c = document.getElementById(canvasId); if (!c) return;
-  const ctx = c.getContext('2d');
-  ctx.clearRect(0,0,c.width,c.height);
-  ctx.fillStyle = '#0a111b'; ctx.fillRect(0,0,c.width,c.height);
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  for (let x=0; x<c.width; x+=32){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,c.height); ctx.stroke(); }
-  for (let y=0; y<c.height; y+=32){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(c.width,y); ctx.stroke(); }
-  function toXY(lat, lon){ const S=170; return { x:c.width/2+(lon||0)*S, y:c.height/2-(lat||0)*S }; }
-  aerocams.forEach(a => {
-    const {x,y} = toXY(a.lat||0, a.lon||0);
-    const r = Math.min(160, Math.max(32, (a.radius||800)/6));
-    const g = ctx.createRadialGradient(x,y,8,x,y,r);
-    g.addColorStop(0,'rgba(78,168,255,0.35)'); g.addColorStop(1,'rgba(78,168,255,0.03)');
-    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-    ctx.strokeStyle = 'rgba(78,168,255,0.85)'; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.stroke();
-    ctx.fillStyle = '#7bdcff'; ctx.beginPath(); ctx.arc(x,y,5,0,Math.PI*2); ctx.fill();
-  });
-}
+    function initMap() {
+      map = new google.maps.Map(document.getElementById("map"), {
+        center: { lat: -33.4489, lng: -70.6693 }, // Santiago
+        zoom: 14,
+        mapTypeId: "roadmap"
+      });
 
-const socket = io(); let myId='', myName='AeroCam', myLat=0, myLon=0, myRadius=800, myOnline=true;
-let aerocams=[], requests=[]; let pc, localStream, room;
+      // Ejemplo: marcador en una posición fija (dron)
+      const dronePos = { lat: -33.45, lng: -70.65 };
+      new google.maps.Marker({
+        position: dronePos,
+        map,
+        title: "Dron en vuelo"
+      });
+    }
+  </script>
 
-function publish(){
-  myId = document.getElementById('acId').value || 'AC-001';
-  myName = document.getElementById('acName').value || 'AeroCam';
-  myLat = parseFloat(document.getElementById('acLat').value || '0');
-  myLon = parseFloat(document.getElementById('acLon').value || '0');
-  myRadius = parseInt(document.getElementById('acRadius').value || '800', 10);
-  myOnline = document.getElementById('acOnline').value === 'true';
-  fetch('/api/aerocam/upsert', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: myId, name: myName, lat: myLat, lon: myLon, radius: myRadius, online: myOnline }) });
-}
-document.getElementById('publish').onclick = publish;
-
-socket.on('aerocams:update', (items) => { aerocams = items; drawMapWithCoverage('mapAero', aerocams); });
-socket.on('requests:update', (items) => { requests = items.filter(r=>r.type==='inmediata' && r.status==='pendiente'); renderRequests(); });
-
-function renderRequests(){
-  const list = document.getElementById('list'); list.innerHTML='';
-  requests.forEach(r=>{
-    const card = document.createElement('div'); card.className = 'card'; card.style.margin='8px 0';
-    card.innerHTML = `<div style="font-weight:700">ID: ${r.id}</div>
-                      <div class="small">Modo: ${r.mode} · Usuario: ${r.user?.name || ''}</div>
-                      <div class="row" style="margin-top:8px"><button data-id="${r.id}">Aceptar</button></div>`;
-    card.querySelector('button').onclick = () => accept(r.id);
-    list.appendChild(card);
-  });
-}
-
-async function accept(id){
-  if (!myId) return alert('Publicá tu estado primero');
-  const res = await fetch('/api/request/'+id+'/accept', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ aerocamId: myId }) });
-  if (!res.ok) return alert('No se pudo aceptar');
-  const data = await res.json();
-  document.getElementById('room').value = data.id; room = data.id;
-  document.getElementById('joinBtn').disabled = false;
-  alert('Aceptada. Unirme → Cam → Iniciar');
-}
-
-document.getElementById('joinBtn').onclick = () => { if(!room) return alert('Sin solicitud'); socket.emit('join', { room, role:'AEROCAM' }); document.getElementById('joinBtn').disabled=true; document.getElementById('cameraBtn').disabled=false; };
-document.getElementById('cameraBtn').onclick = async () => { try { localStream = await navigator.mediaDevices.getUserMedia({ video:true, audio:false }); document.getElementById('localVideo').srcObject = localStream; document.getElementById('cameraBtn').disabled=true; document.getElementById('startBtn').disabled=false; } catch(e) { alert('No cámara: '+e.message); } };
-
-function createPC(){ pc = new RTCPeerConnection({ iceServers:[{urls:'stun:stun.l.google.com:19302'}] }); pc.onicecandidate = (e)=>{ if(e.candidate) socket.emit('ice', { room, candidate:e.candidate }); }; localStream.getTracks().forEach(t=>pc.addTrack(t, localStream)); }
-document.getElementById('startBtn').onclick = async () => { createPC(); const offer = await pc.createOffer(); await pc.setLocalDescription(offer); socket.emit('offer', { room, sdp: offer }); };
-socket.on('answer', async ({ sdp }) => { await pc.setRemoteDescription(new RTCSessionDescription(sdp)); });
-socket.on('ice', async ({ candidate }) => { try{ await pc.addIceCandidate(candidate); }catch(e){} });
-</script>
+  <script async
+    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBE6RpbjSqnMFVKT6SHrU4y_9drfNHM4WI&callback=initMap">
+  </script>
 </body>
 </html>
