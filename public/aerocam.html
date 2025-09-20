@@ -48,41 +48,60 @@
 <script>
   const socket = io();
   let map, myMarker;
+  const CLIENT_ROLE = 'AEROCAM';
+  const CLIENT_ID = document.getElementById('acId') ? document.getElementById('acId').value || ('AC-'+Math.floor(Math.random()*10000)) : ('AC-'+Math.floor(Math.random()*10000));
 
   function initMap(){
     map = new google.maps.Map(document.getElementById('map'), { center:{lat:-33.4489,lng:-70.6693}, zoom:14, mapTypeId:'roadmap' });
     myMarker = new google.maps.Marker({ position: map.getCenter(), map, draggable:true, title:'AeroCam' });
+
+    // publicar al mover el marker (manual) o publicar con botón "Publicar"
+    myMarker.addListener('dragend', () => {
+      const p = myMarker.getPosition();
+      const radius = Number(document.getElementById('acRadius') ? document.getElementById('acRadius').value : 800) || 800;
+      socket.emit('position:update', { clientId: CLIENT_ID, role: CLIENT_ROLE, id: CLIENT_ID, lat: p.lat(), lon: p.lng(), radius });
+    });
   }
 
-  document.getElementById('publish').onclick = async ()=>{
-    const id = document.getElementById('acId').value || 'AC-001';
-    const pos = myMarker.getPosition();
-    await fetch('/api/aerocam/upsert', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id, name:id, lat: pos.lat(), lon: pos.lng(), radius:800, online:true }) });
-    alert('Publicado: ' + id);
+  // Botón publicar
+  document.getElementById('publish').onclick = async () => {
+    // asegúrate de que acId esté seteado
+    const id = document.getElementById('acId').value || CLIENT_ID;
+    const p = myMarker.getPosition();
+    const radius = Number(document.getElementById('acRadius').value) || 800;
+    socket.emit('position:update', { clientId: id, role: CLIENT_ROLE, id, lat: p.lat(), lon: p.lng(), radius });
+    alert('Estado publicado');
   };
 
-  socket.on('requests:update', (all)=>{
-    const pending = all.filter(r=>r.type==='inmediata' && r.status==='pendiente');
-    const container = document.getElementById('list'); container.innerHTML = '';
-    pending.forEach(r=>{
-      const el = document.createElement('div'); el.style.border='1px solid rgba(255,255,255,0.03)'; el.style.padding='8px'; el.style.marginBottom='8px';
-      el.innerHTML = `<div style="font-weight:700">ID: ${r.id}</div><div class="small">Modo: ${r.mode}</div><div style="margin-top:6px"><button data-id="${r.id}">Aceptar</button></div>`;
-      el.querySelector('button').onclick = ()=> accept(r.id);
-      container.appendChild(el);
+  // Recibir posiciones (mismo manejo que usuario)
+  const otherMarkers = {};
+  const otherCircles = {};
+
+  socket.on('positions:update', list => {
+    const keep = new Set();
+    list.forEach(item => {
+      const key = item.clientKey;
+      keep.add(key);
+      if (key === (document.getElementById('acId').value || CLIENT_ID)) return; // no dibujar tu propio 'otro'
+      // marcador
+      if (!otherMarkers[key]) otherMarkers[key] = new google.maps.Marker({ position:{lat:item.lat,lng:item.lon}, map, title:item.id });
+      else otherMarkers[key].setPosition({lat:item.lat,lng:item.lon});
+      // si es AEROCAM dibujar su radio; si es VISIONARIO tal vez dibujar solo marcador
+      if (item.role === 'AEROCAM' && item.radius) {
+        if (!otherCircles[key]) otherCircles[key] = new google.maps.Circle({
+          strokeColor: "#4ea8ff", fillColor:"#7bdcff", fillOpacity:0.12, strokeOpacity:0.6, strokeWeight:2, map,
+          center:{lat:item.lat,lng:item.lon}, radius:item.radius
+        });
+        else { otherCircles[key].setCenter({lat:item.lat,lng:item.lon}); otherCircles[key].setRadius(item.radius); }
+      } else {
+        if (otherCircles[key]) { otherCircles[key].setMap(null); delete otherCircles[key]; }
+      }
     });
+    Object.keys(otherMarkers).forEach(k => { if (!keep.has(k)) { otherMarkers[k].setMap(null); delete otherMarkers[k]; }});
+    Object.keys(otherCircles).forEach(k => { if (!keep.has(k)) { otherCircles[k].setMap(null); delete otherCircles[k]; }});
   });
-
-  async function accept(id){
-    const acId = document.getElementById('acId').value || 'AC-001';
-    const res = await fetch('/api/request/'+id+'/accept', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ aerocamId: acId }) });
-    if(!res.ok) return alert('No se pudo aceptar');
-    const data = await res.json();
-    alert('Aceptada: ' + data.id);
-    // join room + start stream flow is handled by other parts of app (demo)
-  }
-
-  socket.on('aerocams:update', (list)=>{ /* update map if needed */ });
 </script>
+
 </body>
 </html>
 
