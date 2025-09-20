@@ -1,37 +1,88 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <title>AeroCam - Piloto</title>
+  <meta charset="utf-8">
+  <title>AeroCam – Piloto</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <style>
-    #map { height: 100vh; width: 100%; }
+    body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#0b0f14;color:#e9f0f4}
+    .wrap{max-width:420px;margin:12px auto;padding:12px}
+    .card{background:#121722;border-radius:12px;padding:12px;margin-bottom:12px;border:1px solid rgba(255,255,255,0.04)}
+    .row{display:flex;gap:8px}
+    #map{width:100%;height:320px;border-radius:10px;overflow:hidden}
+    input,button{padding:10px;border-radius:8px;border:none}
+    button.primary{background:#1976d2;color:#fff;font-weight:700;cursor:pointer}
+    .small{color:#7b8ca3;font-size:13px}
   </style>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBE6RpbjSqnMFVKT6SHrU4y_9drfNHM4WI&callback=initMap"></script>
 </head>
 <body>
-  <div id="map"></div>
+  <div class="wrap">
+    <div class="card">
+      <h3 style="margin:0 0 8px">Mi estado</h3>
+      <div class="row">
+        <input id="acId" placeholder="ID ej. AC-001" style="flex:1"/>
+        <button id="publish" class="primary">Publicar</button>
+      </div>
+      <div class="small">Sugerido: cobertura 500 m – 1 km en ciudad (Mini 4 Pro, VLOS).</div>
+    </div>
 
-  <script>
-    let map;
+    <div class="card">
+      <h3 style="margin:0 0 8px">Mapa de cobertura</h3>
+      <div id="map"></div>
+    </div>
 
-    function initMap() {
-      map = new google.maps.Map(document.getElementById("map"), {
-        center: { lat: -33.4489, lng: -70.6693 }, // Santiago
-        zoom: 14,
-        mapTypeId: "roadmap"
-      });
+    <div class="card">
+      <h3 style="margin:0 0 8px">Solicitudes inmediatas</h3>
+      <div id="list"></div>
+    </div>
 
-      // Ejemplo: marcador en una posición fija (dron)
-      const dronePos = { lat: -33.45, lng: -70.65 };
-      new google.maps.Marker({
-        position: dronePos,
-        map,
-        title: "Dron en vuelo"
-      });
-    }
-  </script>
+    <div class="card">
+      <h3 style="margin:0 0 8px">Transmisión</h3>
+      <video id="localVideo" autoplay playsinline muted style="width:100%;height:220px;background:#000;border-radius:8px"></video>
+    </div>
+  </div>
 
-  <script async
-    src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBE6RpbjSqnMFVKT6SHrU4y_9drfNHM4WI&callback=initMap">
-  </script>
+<script>
+  const socket = io();
+  let map, myMarker;
+
+  function initMap(){
+    map = new google.maps.Map(document.getElementById('map'), { center:{lat:-33.4489,lng:-70.6693}, zoom:14, mapTypeId:'roadmap' });
+    myMarker = new google.maps.Marker({ position: map.getCenter(), map, draggable:true, title:'AeroCam' });
+  }
+
+  document.getElementById('publish').onclick = async ()=>{
+    const id = document.getElementById('acId').value || 'AC-001';
+    const pos = myMarker.getPosition();
+    await fetch('/api/aerocam/upsert', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id, name:id, lat: pos.lat(), lon: pos.lng(), radius:800, online:true }) });
+    alert('Publicado: ' + id);
+  };
+
+  socket.on('requests:update', (all)=>{
+    const pending = all.filter(r=>r.type==='inmediata' && r.status==='pendiente');
+    const container = document.getElementById('list'); container.innerHTML = '';
+    pending.forEach(r=>{
+      const el = document.createElement('div'); el.style.border='1px solid rgba(255,255,255,0.03)'; el.style.padding='8px'; el.style.marginBottom='8px';
+      el.innerHTML = `<div style="font-weight:700">ID: ${r.id}</div><div class="small">Modo: ${r.mode}</div><div style="margin-top:6px"><button data-id="${r.id}">Aceptar</button></div>`;
+      el.querySelector('button').onclick = ()=> accept(r.id);
+      container.appendChild(el);
+    });
+  });
+
+  async function accept(id){
+    const acId = document.getElementById('acId').value || 'AC-001';
+    const res = await fetch('/api/request/'+id+'/accept', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ aerocamId: acId }) });
+    if(!res.ok) return alert('No se pudo aceptar');
+    const data = await res.json();
+    alert('Aceptada: ' + data.id);
+    // join room + start stream flow is handled by other parts of app (demo)
+  }
+
+  socket.on('aerocams:update', (list)=>{ /* update map if needed */ });
+</script>
 </body>
 </html>
+
