@@ -1,5 +1,3 @@
-
-// server.js (reemplaza todo el archivo existente por este contenido)
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -13,16 +11,14 @@ app.use(express.json());
 app.use(express.static('public'));
 
 // Estado en memoria
-const aerocams = new Map();   // key: aerocamId -> { id, name, lat, lon, radius, online, updatedAt }
-const requests = new Map();   // key: requestId -> { id, type, mode, status, user, when, location, path, acceptedBy }
-const positions = new Map();  // key: clientKey -> { clientKey, role, id, lat, lon, radius, updatedAt }
+const aerocams = new Map();
+const requests = new Map();
+const positions = new Map();
 
-// Helpers de serialización (para emitir a clientes)
 const toA = a => ({ id: a.id, name: a.name, lat: a.lat, lon: a.lon, radius: a.radius, online: a.online, updatedAt: a.updatedAt });
 const toR = r => ({ id: r.id, type: r.type, mode: r.mode, status: r.status, user: r.user, when: r.when, location: r.location, path: r.path, acceptedBy: r.acceptedBy || null });
 const toP = p => ({ clientKey: p.clientKey, role: p.role, id: p.id, lat: p.lat, lon: p.lon, radius: p.radius, updatedAt: p.updatedAt });
 
-// --- API HTTP: Aerocams ---
 app.post('/api/aerocam/upsert', (req, res) => {
   const { id, name, lat, lon, radius, online } = req.body || {};
   if (!id) return res.status(400).json({ error: 'id requerido' });
@@ -35,7 +31,6 @@ app.post('/api/aerocam/upsert', (req, res) => {
   item.updatedAt = Date.now();
   aerocams.set(id, item);
 
-  // También actualizar positions (para que el piloto aparezca en el mapa en tiempo real)
   positions.set(id, {
     clientKey: id,
     role: 'AEROCAM',
@@ -55,7 +50,6 @@ app.get('/api/aerocam/list', (_req, res) => {
   res.json(Array.from(aerocams.values()).map(toA));
 });
 
-// --- API HTTP: Requests (solicitudes) ---
 app.post('/api/request/create', (req, res) => {
   const { type, mode, user, when, location, path } = req.body || {};
   if (!type || !mode) return res.status(400).json({ error: 'type/mode requeridos' });
@@ -91,37 +85,28 @@ app.post('/api/request/:id/accept', (req, res) => {
   r.acceptedBy = aerocamId;
   requests.set(r.id, r);
   io.emit('requests:update', Array.from(requests.values()).map(toR));
-
-  // opcional: notificar a la sala/cliente de la solicitud aceptada
   io.emit('request:accepted', toR(r));
   res.json(toR(r));
 });
 
-// --- Opcional: listar posiciones actuales ---
 app.get('/api/positions', (_req, res) => {
   res.json(Array.from(positions.values()).map(toP));
 });
 
-// --- Socket.IO: comunicación en tiempo real ---
 io.on('connection', (socket) => {
-  // emitir estado actual al conectarse
   socket.emit('aerocams:update', Array.from(aerocams.values()).map(toA));
   socket.emit('requests:update', Array.from(requests.values()).map(toR));
   socket.emit('positions:update', Array.from(positions.values()).map(toP));
 
-  // Un cliente puede unirse a una "sala" (opcional)
   socket.on('join', ({ room, role }) => {
     if (room) socket.join(room);
     socket.to(room).emit('peer-joined', { role, peerId: socket.id });
   });
 
-  // --- WebRTC signaling (oferta/respuesta/ice)
   socket.on('offer', ({ room, sdp }) => { socket.to(room).emit('offer', { sdp }); });
   socket.on('answer', ({ room, sdp }) => { socket.to(room).emit('answer', { sdp }); });
   socket.on('ice', ({ room, candidate }) => { socket.to(room).emit('ice', { candidate }); });
 
-  // --- Posiciones en tiempo real: recibir de clientes
-  // payload: { clientId?, clientKey?, role, id?, lat, lon, radius? }
   socket.on('position:update', (payload) => {
     try {
       const clientKey = payload.clientKey || payload.id || payload.clientId || socket.id;
@@ -136,7 +121,6 @@ io.on('connection', (socket) => {
       };
       positions.set(clientKey, item);
 
-      // Si el remitente es un aerocam, también mantener el mapa aerocams actualizado
       if (item.role === 'AEROCAM') {
         const ac = aerocams.get(item.id) || { id: item.id };
         ac.name = ac.name ?? item.id;
@@ -149,14 +133,12 @@ io.on('connection', (socket) => {
         io.emit('aerocams:update', Array.from(aerocams.values()).map(toA));
       }
 
-      // Emitir posiciones a todos (o filtrar por sala en implementaciones más avanzadas)
       io.emit('positions:update', Array.from(positions.values()).map(toP));
     } catch (e) {
       console.error('position:update error', e);
     }
   });
 
-  // --- Petición para limpiar posiciones (opcional)
   socket.on('position:clear', ({ clientKey }) => {
     if (clientKey && positions.has(clientKey)) {
       positions.delete(clientKey);
@@ -164,17 +146,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  // --- Desconexión: limpiar posiciones vinculadas a socket.id
   socket.on('disconnect', () => {
-    // Buscar claves asociadas a este socket (si se usó socket.id como clientKey)
     const toRemove = [];
     positions.forEach((v, k) => {
       if (k === socket.id || v.clientKey === socket.id) toRemove.push(k);
     });
     toRemove.forEach(k => positions.delete(k));
 
-    // opcional: si querés marcar aerocam offline cuando se desconecta
-    // buscar aerocams cuyo id coincida con socket.id y marcarlas offline
     aerocams.forEach((ac, acId) => {
       if (acId === socket.id) {
         ac.online = false;
@@ -188,7 +166,5 @@ io.on('connection', (socket) => {
   });
 });
 
-// --- Puerto de escucha ---
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log('Servidor AeroCam en http://localhost:' + PORT));
-
