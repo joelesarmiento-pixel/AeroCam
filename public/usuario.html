@@ -1,113 +1,109 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <title>Visionario – AeroCam</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <style>
-    body{font-family:Arial,Helvetica,sans-serif;margin:0;background:#0b0f14;color:#e9f0f4}
-    .wrap{max-width:420px;margin:12px auto;padding:12px}
-    .header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-    .title{font-weight:700}
-    .card{background:#121722;border-radius:12px;padding:12px;margin-bottom:12px;border:1px solid rgba(255,255,255,0.04)}
-    #map{width:100%;height:320px;border-radius:10px;overflow:hidden}
-    .row{display:flex;gap:8px;margin-top:10px}
-    select,input,button{padding:10px;border-radius:10px;border:none}
-    button.primary{background:#1976d2;color:#fff;font-weight:700;cursor:pointer}
-    .small{color:#7b8ca3;font-size:13px;margin-top:8px}
-    video{width:100%;height:220px;background:#000;border-radius:8px;margin-top:10px}
-  </style>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBE6RpbjSqnMFVKT6SHrU4y_9drfNHM4WI&callback=initMap"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Visionario – AeroCam</title>
+<link rel="stylesheet" href="style.css">
+<script src="/socket.io/socket.io.js"></script>
+<script async defer src="https://maps.googleapis.com/maps/api/js?key=AIzaSyBE6RpbjSqnMFVKT6SHrU4y_9drfNHM4WI&callback=initMap"></script>
 </head>
 <body>
   <div class="wrap">
-    <div class="header">
-      <div class="title">Visionario</div>
-      <div class="badge small">grabación bajo demanda</div>
-    </div>
-
+    <div class="header"><div class="title">Visionario</div></div>
     <div class="card">
-      <h3 style="margin:0 0 8px">Presencia en tu zona</h3>
+      <h3>Presencia en tu zona</h3>
       <div id="map"></div>
       <div class="small">Zonas azules ≈ cobertura 500 m – 1 km por AeroCam activo.</div>
     </div>
-
     <div class="card">
-      <h3 style="margin:0 0 8px">Solicitud inmediata</h3>
+      <h3>Solicitud inmediata</h3>
       <div class="row">
         <select id="mode"><option value="punto_fijo">Punto fijo</option><option value="seguimiento">Seguimiento</option></select>
         <button id="reqBtn" class="primary">Pedir ahora</button>
       </div>
     </div>
-
     <div class="card">
-      <h3 style="margin:0 0 8px">Ver transmisión</h3>
+      <h3>Ver transmisión</h3>
       <div class="row">
         <input id="room" placeholder="ID de solicitud" style="flex:1"/>
-        <button id="joinBtn" class="">Unirme</button>
+        <button id="joinBtn">Unirme</button>
       </div>
       <video id="remoteVideo" autoplay playsinline></video>
     </div>
   </div>
 
 <script>
-  const socket = io();
-  let map, userMarker;
+const socket = io();
+let map, userMarker;
+const otherMarkers = {};
+const otherCircles = {};
+const CLIENT_ROLE = 'VISIONARIO';
+const CLIENT_ID = 'USER-' + Math.floor(Math.random()*100000);
 
-  function initMap(){
-    map = new google.maps.Map(document.getElementById('map'), {
-      center:{lat:-33.4489,lng:-70.6693},
-      zoom:15,
-      mapTypeId:'roadmap'
-    });
+function initMap(){
+  map = new google.maps.Map(document.getElementById('map'), { center:{lat:-33.4489,lng:-70.6693}, zoom:15, mapTypeId:'roadmap' });
+  if(navigator.geolocation){
+    navigator.geolocation.getCurrentPosition(pos=>{
+      const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      map.setCenter(p);
+      userMarker = new google.maps.Marker({ position: p, map, draggable:true, title:'Tú' });
+      socket.emit('position:update', { clientKey: CLIENT_ID, role: CLIENT_ROLE, id: CLIENT_ID, lat: p.lat, lon: p.lng });
+    }, ()=> { userMarker = new google.maps.Marker({ position: map.getCenter(), map, draggable:true, title:'Tú' }); });
 
-    // try geolocation
-    if(navigator.geolocation){
-      navigator.geolocation.getCurrentPosition(pos=>{
-        const p = {lat: pos.coords.latitude, lng: pos.coords.longitude};
-        map.setCenter(p);
-        userMarker = new google.maps.Marker({position:p,map,draggable:true,title:'Tu ubicación'});
-      }, ()=> {
-        userMarker = new google.maps.Marker({position:map.getCenter(),map,draggable:true,title:'Tu ubicación'});
-      });
+    navigator.geolocation.watchPosition(pos=>{
+      const lat = pos.coords.latitude, lon = pos.coords.longitude;
+      if(userMarker) userMarker.setPosition({lat, lng: lon});
+      socket.emit('position:update', { clientKey: CLIENT_ID, role: CLIENT_ROLE, id: CLIENT_ID, lat, lon });
+    }, err=>{ console.warn('watch error', err); }, { enableHighAccuracy:true, maximumAge:2000 });
+  } else {
+    userMarker = new google.maps.Marker({ position: map.getCenter(), map, draggable:true, title:'Tú' });
+  }
+}
+
+socket.on('positions:update', list => {
+  const keep = new Set();
+  list.forEach(item => {
+    const key = item.clientKey;
+    keep.add(key);
+    if (key === CLIENT_ID) return;
+    if (!otherMarkers[key]) {
+      otherMarkers[key] = new google.maps.Marker({ position:{lat:item.lat,lng:item.lon}, map, title:item.id });
     } else {
-      userMarker = new google.maps.Marker({position:map.getCenter(),map,draggable:true,title:'Tu ubicación'});
+      otherMarkers[key].setPosition({lat:item.lat,lng:item.lon});
     }
-  }
-
-  document.getElementById('reqBtn').onclick = async ()=>{
-    const mode = document.getElementById('mode').value;
-    const pos = userMarker.getPosition();
-    const body = { type:'inmediata', mode, user:{name:'Visionario'}, location:{lat:pos.lat(), lon:pos.lng()} };
-    const res = await fetch('/api/request/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
-    const data = await res.json();
-    alert('Solicitud creada. ID: '+data.id);
-    document.getElementById('room').value = data.id;
-  };
-
-  document.getElementById('joinBtn').onclick = ()=>{
-    const room = (document.getElementById('room').value||'').trim();
-    if(!room) return alert('Falta ID');
-    socket.emit('join', { room, role:'VISIONARIO' });
-    setupPC(room);
-  };
-
-  // Simple WebRTC handling (demo)
-  let pc;
-  function setupPC(room){
-    pc = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-    pc.ontrack = e => { document.getElementById('remoteVideo').srcObject = e.streams[0]; };
-    pc.onicecandidate = e => { if(e.candidate) socket.emit('ice', { room, candidate: e.candidate }); };
-  }
-  socket.on('offer', async ({ sdp })=>{
-    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit('answer', { room, sdp: answer });
+    if (item.role === 'AEROCAM' && item.radius) {
+      if (!otherCircles[key]) otherCircles[key] = new google.maps.Circle({ strokeColor:'#4ea8ff', strokeOpacity:0.6, strokeWeight:2, fillColor:'#7bdcff', fillOpacity:0.12, map, center:{lat:item.lat,lng:item.lon}, radius:item.radius });
+      else { otherCircles[key].setCenter({lat:item.lat,lng:item.lon}); otherCircles[key].setRadius(item.radius); }
+    } else {
+      if (otherCircles[key]) { otherCircles[key].setMap(null); delete otherCircles[key]; }
+    }
   });
-  socket.on('ice', async ({ candidate })=>{ try{ await pc.addIceCandidate(candidate); }catch(e){} });
+  Object.keys(otherMarkers).forEach(k=>{ if(!keep.has(k)){ otherMarkers[k].setMap(null); delete otherMarkers[k]; } });
+  Object.keys(otherCircles).forEach(k=>{ if(!keep.has(k)){ otherCircles[k].setMap(null); delete otherCircles[k]; } });
+});
+
+document.getElementById('reqBtn').onclick = async ()=>{
+  const mode = document.getElementById('mode').value;
+  const pos = userMarker.getPosition();
+  const body = { type:'inmediata', mode, user:{name:'Visionario'}, location:{lat:pos.lat(), lon:pos.lng()} };
+  const res = await fetch('/api/request/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  const data = await res.json();
+  alert('Solicitud creada. ID: '+data.id);
+  document.getElementById('room').value = data.id;
+};
+
+document.getElementById('joinBtn').onclick = ()=>{ const room = (document.getElementById('room').value||'').trim(); if(!room) return alert('Falta ID'); socket.emit('join', { room, role: CLIENT_ROLE }); setupPC(room); };
+
+let pc;
+function setupPC(room){
+  pc = new RTCPeerConnection({ iceServers:[{urls:'stun:stun.l.google.com:19302'}] });
+  pc.ontrack = (e)=> document.getElementById('remoteVideo').srcObject = e.streams[0];
+  pc.onicecandidate = (e)=> { if(e.candidate) socket.emit('ice', { room, candidate: e.candidate }); };
+}
+
+socket.on('offer', async ({ sdp })=>{ await pc.setRemoteDescription(new RTCSessionDescription(sdp)); const answer = await pc.createAnswer(); await pc.setLocalDescription(answer); socket.emit('answer', { room, sdp: answer }); });
+socket.on('ice', async ({ candidate })=>{ try{ await pc.addIceCandidate(candidate); }catch(e){} });
 </script>
 </body>
 </html>
